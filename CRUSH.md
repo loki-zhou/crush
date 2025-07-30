@@ -24,35 +24,34 @@
 - **JSON tags**: Use snake_case for JSON field names
 - **File permissions**: Use octal notation (0o755, 0o644) for file permissions
 - **Comments**: End comments in periods unless comments are at the end of the line.
+- **Testing with Mock Providers**:
 
-## Testing with Mock Providers
+  When writing tests that involve provider configurations, use the mock providers to avoid API calls:
 
-When writing tests that involve provider configurations, use the mock providers to avoid API calls:
+  ```go
+  func TestYourFunction(t *testing.T) {
+      // Enable mock providers for testing
+      originalUseMock := config.UseMockProviders
+      config.UseMockProviders = true
+      defer func() {
+          config.UseMockProviders = originalUseMock
+          config.ResetProviders()
+      }()
 
-```go
-func TestYourFunction(t *testing.T) {
-    // Enable mock providers for testing
-    originalUseMock := config.UseMockProviders
-    config.UseMockProviders = true
-    defer func() {
-        config.UseMockProviders = originalUseMock
-        config.ResetProviders()
-    }()
+      // Reset providers to ensure fresh mock data
+      config.ResetProviders()
 
-    // Reset providers to ensure fresh mock data
-    config.ResetProviders()
+      // Your test code here - providers will now return mock data
+      providers := config.Providers()
+      // ... test logic
+  }
+  ```
 
-    // Your test code here - providers will now return mock data
-    providers := config.Providers()
-    // ... test logic
-}
-```
+- **Formatting**:
 
-## Formatting
-
-- ALWAYS format any Go code you write.
-  - First, try `goftumpt -w .`.
-  - If `gofumpt` is not available, use `goimports`.
-  - If `goimports` is not available, use `gofmt`.
-  - You can also use `task fmt` to run `gofumpt -w .` on the entire project,
-    as long as `gofumpt` is on the `PATH`.
+  - ALWAYS format any Go code you write.
+    - First, try `goftumpt -w .`.
+    - If `gofumpt` is not available, use `goimports`.
+    - If `goimports` is not available, use `gofmt`.
+    - You can also use `task fmt` to run `gofumpt -w .` on the entire project,
+      as long as `gofumpt` is on the `PATH`.
