@@ -3,6 +3,7 @@ package models
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea/v2"
 	"github.com/charmbracelet/catwalk/pkg/catwalk"
@@ -49,7 +50,15 @@ func (m *ModelListComponent) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	if len(m.providers) == 0 {
 		providers, err := config.Providers()
-		m.providers = providers
+		filteredProviders := []catwalk.Provider{}
+		for _, p := range providers {
+			hasAPIKeyEnv := strings.HasPrefix(p.APIKey, "$")
+			if hasAPIKeyEnv && p.ID != catwalk.InferenceProviderAzure {
+				filteredProviders = append(filteredProviders, p)
+			}
+		}
+
+		m.providers = filteredProviders
 		if err != nil {
 			cmds = append(cmds, util.ReportError(err))
 		}
@@ -120,7 +129,8 @@ func (m *ModelListComponent) SetModelType(modelType int) tea.Cmd {
 		}
 
 		// Check if this provider is not in the known providers list
-		if !slices.ContainsFunc(knownProviders, func(p catwalk.Provider) bool { return p.ID == catwalk.InferenceProvider(providerID) }) {
+		if !slices.ContainsFunc(knownProviders, func(p catwalk.Provider) bool { return p.ID == catwalk.InferenceProvider(providerID) }) ||
+			!slices.ContainsFunc(m.providers, func(p catwalk.Provider) bool { return p.ID == catwalk.InferenceProvider(providerID) }) {
 			// Convert config provider to provider.Provider format
 			configProvider := catwalk.Provider{
 				Name:   providerConfig.Name,
@@ -240,8 +250,4 @@ func (m *ModelListComponent) GetModelType() int {
 
 func (m *ModelListComponent) SetInputPlaceholder(placeholder string) {
 	m.list.SetInputPlaceholder(placeholder)
-}
-
-func (m *ModelListComponent) SetProviders(providers []catwalk.Provider) {
-	m.providers = providers
 }

@@ -15,29 +15,43 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/bedrock"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/vertex"
 	"github.com/charmbracelet/catwalk/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/llm/tools"
+	"github.com/charmbracelet/crush/internal/log"
 	"github.com/charmbracelet/crush/internal/message"
 )
 
+// Pre-compiled regex for parsing context limit errors.
+var contextLimitRegex = regexp.MustCompile(`input length and ` + "`max_tokens`" + ` exceed context limit: (\d+) \+ (\d+) > (\d+)`)
+
 type anthropicClient struct {
 	providerOptions   providerClientOptions
-	useBedrock        bool
+	tp                AnthropicClientType
 	client            anthropic.Client
 	adjustedMaxTokens int // Used when context limit is hit
 }
 
 type AnthropicClient ProviderClient
 
-func newAnthropicClient(opts providerClientOptions, useBedrock bool) AnthropicClient {
+type AnthropicClientType string
+
+const (
+	AnthropicClientTypeNormal  AnthropicClientType = "normal"
+	AnthropicClientTypeBedrock AnthropicClientType = "bedrock"
+	AnthropicClientTypeVertex  AnthropicClientType = "vertex"
+)
+
+func newAnthropicClient(opts providerClientOptions, tp AnthropicClientType) AnthropicClient {
 	return &anthropicClient{
 		providerOptions: opts,
-		client:          createAnthropicClient(opts, useBedrock),
+		tp:              tp,
+		client:          createAnthropicClient(opts, tp),
 	}
 }
 
-func createAnthropicClient(opts providerClientOptions, useBedrock bool) anthropic.Client {
+func createAnthropicClient(opts providerClientOptions, tp AnthropicClientType) anthropic.Client {
 	anthropicClientOptions := []option.RequestOption{}
 
 	// Check if Authorization header is provided in extra headers
@@ -64,11 +78,22 @@ func createAnthropicClient(opts providerClientOptions, useBedrock bool) anthropi
 	} else if hasBearerAuth {
 		slog.Debug("Skipping X-Api-Key header because Authorization header is provided")
 	}
-	if useBedrock {
-		anthropicClientOptions = append(anthropicClientOptions, bedrock.WithLoadDefaultConfig(context.Background()))
+
+	if config.Get().Options.Debug {
+		httpClient := log.NewHTTPClient()
+		anthropicClientOptions = append(anthropicClientOptions, option.WithHTTPClient(httpClient))
 	}
-	for _, header := range opts.extraHeaders {
-		anthropicClientOptions = append(anthropicClientOptions, option.WithHeaderAdd(header, opts.extraHeaders[header]))
+
+	switch tp {
+	case AnthropicClientTypeBedrock:
+		anthropicClientOptions = append(anthropicClientOptions, bedrock.WithLoadDefaultConfig(context.Background()))
+	case AnthropicClientTypeVertex:
+		project := opts.extraParams["project"]
+		location := opts.extraParams["location"]
+		anthropicClientOptions = append(anthropicClientOptions, vertex.WithGoogleAuth(context.Background(), location, project))
+	}
+	for key, header := range opts.extraHeaders {
+		anthropicClientOptions = append(anthropicClientOptions, option.WithHeaderAdd(key, header))
 	}
 	for key, value := range opts.extraBody {
 		anthropicClientOptions = append(anthropicClientOptions, option.WithJSONSet(key, value))
@@ -228,9 +253,6 @@ func (a *anthropicClient) preparedMessages(messages []anthropic.MessageParam, to
 	if a.providerOptions.systemPromptPrefix != "" {
 		systemBlocks = append(systemBlocks, anthropic.TextBlockParam{
 			Text: a.providerOptions.systemPromptPrefix,
-			CacheControl: anthropic.CacheControlEphemeralParam{
-				Type: "ephemeral",
-			},
 		})
 	}
 
@@ -253,17 +275,11 @@ func (a *anthropicClient) preparedMessages(messages []anthropic.MessageParam, to
 }
 
 func (a *anthropicClient) send(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (response *ProviderResponse, err error) {
-	cfg := config.Get()
-
 	attempts := 0
 	for {
 		attempts++
 		// Prepare messages on each attempt in case max_tokens was adjusted
 		preparedMessages := a.preparedMessages(a.convertMessages(messages), a.convertTools(tools))
-		if cfg.Options.Debug {
-			jsonData, _ := json.Marshal(preparedMessages)
-			slog.Debug("Prepared messages", "messages", string(jsonData))
-		}
 
 		var opts []option.RequestOption
 		if a.isThinkingEnabled() {
@@ -276,7 +292,7 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 		)
 		// If there is an error we are going to see if we can retry the call
 		if err != nil {
-			slog.Error("Error in Anthropic API call", "error", err)
+			slog.Error("Anthropic API error", "error", err.Error(), "attempt", attempts, "max_retries", maxRetries)
 			retry, after, retryErr := a.shouldRetry(attempts, err)
 			if retryErr != nil {
 				return nil, retryErr
@@ -309,7 +325,6 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 }
 
 func (a *anthropicClient) stream(ctx context.Context, messages []message.Message, tools []tools.BaseTool) <-chan ProviderEvent {
-	cfg := config.Get()
 	attempts := 0
 	eventChan := make(chan ProviderEvent)
 	go func() {
@@ -317,10 +332,6 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 			attempts++
 			// Prepare messages on each attempt in case max_tokens was adjusted
 			preparedMessages := a.preparedMessages(a.convertMessages(messages), a.convertTools(tools))
-			if cfg.Options.Debug {
-				jsonData, _ := json.Marshal(preparedMessages)
-				slog.Debug("Prepared messages", "messages", string(jsonData))
-			}
 
 			var opts []option.RequestOption
 			if a.isThinkingEnabled() {
@@ -475,7 +486,7 @@ func (a *anthropicClient) shouldRetry(attempts int, err error) (bool, int64, err
 		if err != nil {
 			return false, 0, fmt.Errorf("failed to resolve API key: %w", err)
 		}
-		a.client = createAnthropicClient(a.providerOptions, a.useBedrock)
+		a.client = createAnthropicClient(a.providerOptions, a.tp)
 		return true, 0, nil
 	}
 
@@ -512,8 +523,7 @@ func (a *anthropicClient) handleContextLimitError(apiErr *anthropic.Error) (int,
 	// Parse error message like: "input length and max_tokens exceed context limit: 154978 + 50000 > 200000"
 	errorMsg := apiErr.Error()
 
-	re := regexp.MustCompile("input length and `max_tokens` exceed context limit: (\\d+) \\+ (\\d+) > (\\d+)")
-	matches := re.FindStringSubmatch(errorMsg)
+	matches := contextLimitRegex.FindStringSubmatch(errorMsg)
 
 	if len(matches) != 4 {
 		return 0, false

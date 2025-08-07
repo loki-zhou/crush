@@ -188,8 +188,8 @@ func (m *messageCmp) renderAssistantMessage() string {
 		truncated := ansi.Truncate(finishedData.Message, m.textWidth()-2-lipgloss.Width(errTag), "...")
 		title := fmt.Sprintf("%s %s", errTag, t.S().Base.Foreground(t.FgHalfMuted).Render(truncated))
 		details := t.S().Base.Foreground(t.FgSubtle).Width(m.textWidth() - 2).Render(finishedData.Details)
-		// Handle error messages differently
-		return fmt.Sprintf("%s\n\n%s", title, details)
+		errorContent := fmt.Sprintf("%s\n\n%s", title, details)
+		return m.style().Render(errorContent)
 	}
 
 	if thinkingContent != "" {
@@ -274,11 +274,13 @@ func (m *messageCmp) renderThinkingContent() string {
 	if reasoningContent.StartedAt > 0 {
 		duration := m.message.ThinkingDuration()
 		if reasoningContent.FinishedAt > 0 {
+			if duration.String() == "0s" {
+				return ""
+			}
 			m.anim.SetLabel("")
 			opts := core.StatusOpts{
 				Title:       "Thought for",
 				Description: duration.String(),
-				NoIcon:      true,
 			}
 			return t.S().Base.PaddingLeft(1).Render(core.Status(opts, m.textWidth()-1))
 		} else if finishReason != nil && finishReason.Reason == message.FinishReasonCanceled {
